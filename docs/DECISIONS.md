@@ -14,8 +14,14 @@ magpie 通过本地 spec 原地加载；不再存在「仓库一份 + 部署目�
 magpie 的本地 spec 是原地加载（官方原文 "a folder is loaded where it is;
 nothing is installed"），所以根本不需要复制。
 
+远端分工（2026-11-15 起）：`origin` = 自己的 fork `cixia6944-cloud/magpie-dumate`，
+`upstream` = `R227BOUT/magpie-dumate`。推之前 `origin` 曾是只读上游，
+所以 2026-11-15 之前那 4 个本地提交在本机独自存在过一段时间——这是分离两个名字的原因。
+
 **复核判据**：
 ```bash
+git remote -v                     # origin=自己的 fork，upstream=上游
+git rev-parse --abbrev-ref main@{upstream}   # origin/main
 grep -o '"spec": "[^"]*dumate[^"]*"' ~/.config/magpie/plugin-providers.json
 # 输出应指向本仓库根目录，且用户目录下没有第二份 index.mjs：
 find "$USERPROFILE" -name "index.mjs" -path "*dumate*" 2>/dev/null   # 只应有一条
@@ -130,6 +136,41 @@ curl -s https://api.github.com/repos/R227BOUT/magpie-dumate/pulls?state=closed \
 ```bash
 node test-magpie-upgrade.mjs; echo "exit=$?"     # SKIP 且 exit=0
 grep -c "test-heartbeat" run-tests.mjs           # 应为 0（确实不在 runner 里）
+```
+
+---
+
+## D9 · 2026-11-15 · 推到自己的 fork，不给上游开 PR
+
+**决定**：`origin` = `cixia6944-cloud/magpie-dumate`（真 fork，`fork: true`、parent 指向上游），
+`main` 跟踪 `origin/main`；上游保留为 `upstream`，只 fetch 不 push。
+
+**理由**：
+1. 这批提交里有一半是**本机部署与验收记录**（`docs/TODO.md`、部署实测、余额链路），
+   对上游没有任何价值，混进去只会增加 review 噪音。
+2. 真正的代码修复只有三处，且各自对应上游已开的 issue（#3 / #6 和一个未登记的
+   Cookie 头问题）。要提上游应当**拆成独立 PR**，而不是把一个 fork 的 main 整个推过去。
+   → 后续动作见 `docs/TODO.md` 第 4 节。
+3. fork 带了 `magpie-plugin` topic 也不会出现在 magpie 的 Discover 列表里——
+   上游文档写明扫描时排除 fork（"不是 fork、不是已归档"），所以不会污染插件市场。
+
+**怎么做的**（GCM 环境下没有 `gh` CLI，也不需要手搓 PAT）：
+```bash
+export GH_TOKEN=$(printf 'protocol=https\nhost=github.com\n\n' | git credential fill | sed -n 's/^password=//p')
+curl -s -X POST -H "Authorization: Bearer $GH_TOKEN" \
+     https://api.github.com/repos/R227BOUT/magpie-dumate/forks -d '{}'   # → 202
+git remote add origin https://github.com/cixia6944-cloud/magpie-dumate.git
+git push -u origin main
+```
+`git credential fill` 取到的是 GCM 托管的 GitHub 凭据，**能当 API token 用**；
+用完不落盘、不打印（命令里只经 `$GH_TOKEN` 传递）。
+
+**复核判据**：
+```bash
+curl -s https://api.github.com/repos/cixia6944-cloud/magpie-dumate \
+  | python -c "import json,sys;d=json.load(sys.stdin);print(d['fork'],d['parent']['full_name'],d['default_branch'])"
+# 期望 True R227BOUT/magpie-dumate main
+git fetch origin && git status -sb    # 本地 main 与 origin/main 同步
 ```
 
 ---

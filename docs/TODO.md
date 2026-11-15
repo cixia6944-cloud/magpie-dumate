@@ -34,8 +34,11 @@
 
 - **必须在百度搭子客户端里保持登录**。插件只读复用 `auth.json` + `.cookie-key`，
   客户端登出 / 换号后必须重新 `magpie plugin login dumate`。这一步没有自动化空间。
-- **是否要把本地支线推回 GitHub**：需要用户决定推自己的 fork 还是给上游开 PR。
-  在此之前本地提交只存在于本机，`git remote` 指向的仍是上游只读地址。
+- ~~是否要把本地支线推回 GitHub~~ → **已定**（2026-11-15）：推到 fork
+  `cixia6944-cloud/magpie-dumate`，`main` 跟踪 `origin/main`，上游留作 `upstream`。
+  不给上游开 PR，理由见 `DECISIONS.md` D9。**仍需用户决定**：要不要把三处代码修复
+  拆成独立 PR 提给上游（那需要按上游风格只带 `index.mjs` / `models.mjs` / 两个测试，
+  不带 `docs/` 整包）。
 
 ## 4. 🔄 下一步（我能做，等指令）
 

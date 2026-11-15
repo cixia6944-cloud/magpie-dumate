@@ -295,9 +295,10 @@ V4.1 的推理档位统一为 `none / low / high / max`，插件只对 `deepseek
 
 ### 0.3.1（2026-11-15 本地维护支线：行尾、多账号、API id 去重、Cookie 头加固）
 
-这一段**不在上游**。仓库 `R227BOUT/magpie-dumate` 仍是事实来源，
-本机这份是同一份源码的本地检出，在上面叠了本地提交（具体路径不入库——脱敏闸门会拦绝对路径），
-决策与待办见同目录 `docs/`。没有向 GitHub 推送任何东西。
+这一段**不在上游**。`R227BOUT/magpie-dumate` 仍是事实来源，本地维护支线推在
+fork 上：`cixia6944-cloud/magpie-dumate`（`origin`），上游是 `upstream`。
+没有给上游开 PR——这些改动里有相当一部分是本机部署与验收记录（`docs/`），
+不适合直接往别人的插件仓库里塞。决策见 `docs/DECISIONS.md` D1 / D9。
 
 - **行尾固定为 LF**（新增 `.gitattributes`）：上游没有这个文件，Windows 上
   `core.autocrlf=true` 会把工作区转成 CRLF，而 `test-delivery-review` 里
