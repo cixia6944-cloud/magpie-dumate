@@ -20,7 +20,15 @@ let totalPass = 0, totalFail = 0, failedSuites = []
 for (const suite of suites) {
   const file = join(here, suite + ".mjs")
   const t0 = Date.now()
-  const r = spawnSync(node, [file], { encoding: "utf8", timeout: 300_000 })
+  // Offline suites assert behaviour, not pacing — the guard's 800ms minimum
+  // interval turned test-determinism from 2.5s into 55s because it calls the
+  // same hook in a loop. Online suites keep the real spacing: they are measuring
+  // actual latency, and silencing it there would hide what they exist to catch.
+  const r = spawnSync(node, [file], {
+    encoding: "utf8",
+    timeout: 300_000,
+    env: OFFLINE.includes(suite) ? { ...process.env, DUMATE_MIN_INTERVAL_MS: "0" } : process.env,
+  })
   const out = (r.stdout ?? "") + (r.stderr ?? "")
   const pass = (out.match(/^  PASS/gm) ?? []).length
   const fail = (out.match(/FAIL/g) ?? []).length

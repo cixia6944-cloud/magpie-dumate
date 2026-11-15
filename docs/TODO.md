@@ -17,6 +17,12 @@
 | Cookie 头控制字符/非法名过滤 | ✅ | `node test-unit.mjs` U9 通过 |
 | token 缓存上限 16 条 | ✅ | `grep -n "TOKEN_CACHE_MAX" index.mjs` 有定义且 `rememberToken` 是唯一写入点 |
 | README 变更记录 0.3.1 段 | ✅ | `node test-release-ready.mjs` R1 版本一致 |
+| 请求节奏：console 接口最小间隔 800ms + 35% 抖动 | ✅ | `node test-unit.mjs` U11（注入时钟，不睡真实时间） |
+| 熔断：连续 3 次软失败停手 15 分钟，聊天入口快速 429 | ✅ | `node test-unit.mjs` U12 |
+| 响应分类：只对 429/403/5xx 退避，401/3xx 不动 | ✅ | `node test-unit.mjs` U13 |
+| `Retry-After` 遵守且有 1 小时封顶 | ✅ | U13 的 `retryAfterHeader: "999999"` 用例 |
+| `guard.mjs` 进 `package.json` 的 `files` | ✅ | `node -e "console.log(require('./package.json').files)"` 含 guard.mjs |
+| 节流开关 `DUMATE_MIN_INTERVAL_MS`（离线套件设 0，线上保留） | ✅ | `node run-tests.mjs --quick` 总耗时回落到 ~10s，且 `test-determinism` ≤2s |
 
 ## 2. 部署 / 同源化
 

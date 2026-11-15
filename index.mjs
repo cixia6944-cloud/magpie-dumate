@@ -25,6 +25,7 @@
 import { createDecipheriv, createHash } from "node:crypto"
 import { readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
+import { createGuard, classifyResponse } from "./guard.mjs"
 import { desktopUserDataDir } from "./paths.mjs"
 import { loadModels } from "./models.mjs"
 import { normalizeReasoningBody } from "./reasoning.mjs"
@@ -289,7 +290,25 @@ function htmlSignInError() {
   return err
 }
 
+// One guard for the whole process: the console endpoints are what a burst would
+// look like, and the state has to be shared across accounts to be worth anything.
+const riskGuard = createGuard()
+
+// 429/403/5xx and an explicit Retry-After are the shapes worth backing off from.
+// 401 and the HTML login page are a session problem, not a pacing problem — if
+// they tripped the breaker, one ordinary sign-out would lock the provider for
+// 15 minutes and the user would read it as "插件坏了".
+function reportResult(status, headers) {
+  const { soft, retryAfterMs } = classifyResponse({
+    status,
+    retryAfterHeader: headers?.get?.("retry-after"),
+  })
+  if (soft) riskGuard.note(false, { retryAfterMs })
+  return soft
+}
+
 async function consoleGet(path, cookieStr) {
+  await riskGuard.waitTurn()
   const res = await fetch(`${CONSOLE_BASE}${path}`, {
     headers: {
       Cookie: cookieStr,
@@ -304,6 +323,7 @@ async function consoleGet(path, cookieStr) {
     redirect: "manual",
     signal: AbortSignal.timeout(20_000),
   })
+  const soft = reportResult(res.status, res.headers)
   if (res.status >= 300 && res.status < 400) throw htmlSignInError()
   const text = await res.text()
   let payload = null
@@ -315,6 +335,8 @@ async function consoleGet(path, cookieStr) {
   }
   if (!res.ok) throw new Error(`DuMate console HTTP ${res.status}`)
   if (payload?.code !== 0 || payload?.success === false) throw consoleError(payload, `code=${payload?.code}`)
+  // A clean answer resets the streak: the breaker counts trouble, not traffic.
+  if (!soft) riskGuard.note(true)
   return payload?.result
 }
 
@@ -338,6 +360,7 @@ async function consolePost(path, body, cookies) {
     redirect: "manual",
     signal: AbortSignal.timeout(20_000),
   })
+  const soft = reportResult(res.status, res.headers)
   if (res.status >= 300 && res.status < 400) throw htmlSignInError()
   const text = await res.text()
   let payload = null
@@ -348,6 +371,8 @@ async function consolePost(path, body, cookies) {
   }
   if (!res.ok) throw new Error(`DuMate console HTTP ${res.status}`)
   if (payload?.code !== 0 || payload?.success === false) throw consoleError(payload, `code=${payload?.code}`)
+  // A clean answer resets the streak: the breaker counts trouble, not traffic.
+  if (!soft) riskGuard.note(true)
   return payload?.result
 }
 
@@ -523,6 +548,20 @@ export const DuMatePlugin = async (input = {}) => {
                 { status: 400, headers: { "Content-Type": "application/json" } },
               )
             }
+            // Breaker open: say so now, in the vocabulary the caller understands
+            // (429), instead of queueing work that would all hit the same wall.
+            if (riskGuard.isOpen()) {
+              const left = Math.ceil((riskGuard.status().openUntil - Date.now()) / 60_000)
+              return new Response(
+                JSON.stringify({
+                  error: {
+                    message: `DuMate 暂缓调用，约 ${left} 分钟后自动恢复（连续异常后退避，避免继续重试触发风控）`,
+                    type: "rate_limit_error",
+                  },
+                }),
+                { status: 429, headers: { "Content-Type": "application/json" } },
+              )
+            }
             let bodyText = init?.body
             if (bodyText === undefined && req) bodyText = await req.clone().text()
             bodyText = normalizeReasoningBody(bodyText)
@@ -551,6 +590,10 @@ export const DuMatePlugin = async (input = {}) => {
               // an expired session instead of an unhandled network error.
               redirect: "manual",
             })
+            // A 429/403 from the gateway is the one signal worth acting on
+            // immediately: report it to the breaker so the next few calls fail
+            // fast instead of piling onto whatever limit we just hit.
+            reportResult(res.status, res.headers)
             if ((res.status >= 300 && res.status < 400) || res.status === 401) {
               tokenCache.delete(cookieHeaderOf(cookies))
               return new Response(
