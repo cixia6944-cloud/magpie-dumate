@@ -2,6 +2,7 @@
 // 通过 _internal 导出避免重复实现。
 import { DuMatePlugin, _internal } from "./index.mjs"
 import { createGuard, classifyResponse } from "./guard.mjs"
+import { withStreamUsage } from "./usage-meter.mjs"
 
 const { parseCookieString, buildCookieHeader, extractCsrfToken } = _internal ?? {}
 const ok = (n) => console.log(`  PASS ${n}`)
@@ -255,5 +256,31 @@ try {
   if (absurd.retryAfterMs > 3600_000) throw new Error("Retry-After 没有封顶，服务端可以让我们停一整天")
   ok("只对 429/403/5xx 退避，401/3xx 不动，Retry-After 有封顶")
 } catch (e) { fail("响应分类", e) }
+
+// 上游流式响应默认不带 usage（magpie 那 297/297 条 dumate 记录 in/out/cache 全为 0），
+// 必须显式要才会在最后一个 chunk 里给。这里只补这一个字段，其余一律不动——
+// messages / tools 是上游做前缀缓存的对象，动一个字节就可能从命中变未命中。
+console.log("[U14] 流式请求要 usage，但不碰任何可缓存的内容")
+try {
+  const req = {
+    model: "deepseek-v41-flash", stream: true,
+    messages: [{ role: "user", content: "hi" }],
+    tools: [{ type: "function", function: { name: "a" } }],
+    temperature: 0.3,
+  }
+  const out = JSON.parse(withStreamUsage(JSON.stringify(req)))
+  if (out.stream_options?.include_usage !== true) throw new Error("没补上 include_usage")
+  const { stream_options, ...rest } = out
+  if (JSON.stringify(rest) !== JSON.stringify(req)) throw new Error("除了 stream_options 还改了别的东西")
+  if (Object.keys(out).join(",") !== Object.keys(req).join(",") + ",stream_options") throw new Error("原有键序被改动")
+
+  if (JSON.parse(withStreamUsage(JSON.stringify({ ...req, stream: false })))?.stream_options) throw new Error("非流式不该补")
+  const explicit = { ...req, stream_options: { include_usage: false } }
+  if (JSON.parse(withStreamUsage(JSON.stringify(explicit))).stream_options?.include_usage !== false) {
+    throw new Error("调用方显式设置被覆盖了")
+  }
+  if (withStreamUsage("not-json") !== "not-json") throw new Error("非 JSON 不该被改写")
+  ok("只补 include_usage，字段与键序原样，显式设置优先")
+} catch (e) { fail("流式 usage", e) }
 
 console.log(process.exitCode ? "\n== 有失败项 ==" : "\n== 全部通过 ==")

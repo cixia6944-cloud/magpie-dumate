@@ -251,3 +251,33 @@ node test-bug-regression.mjs | grep G10     # 余额实时、签到按 seat 缓�
 node test-checkin-branches.mjs; echo "exit=$?"   # 7 条全过（缓存不得掩盖 signIn=expired）
 grep -n "Deliberately not cached" index.mjs      # 余额那段有就地说明，防止以后有人"顺手优化"
 ```
+
+---
+
+## D12 · 2026-11-15 · 缓存命中：能做的是「让它可观测」，不是「让它更高」
+
+**决定**：给流式请求补 `stream_options.include_usage`，让 magpie 能记 token；
+新增 `tools/cache-report.mjs` 做长期观测。**不**声称命中率提升，也不去动 prompt。
+
+**理由**（实测数据）：
+1. `usage.jsonl` 里 316/316 条 dumate 记录 `in/out/cache_read` 全 0 —— 元数据缺，先修这个。
+2. 补上之后 usage 回来了：`prompt_tokens=1201, completion_tokens=3`，
+   但**没有** `prompt_cache_hit_tokens` / `cached_tokens` 之类字段。网关不报命中。
+3. 三次探测想把命中「测出来」，结果互相矛盾：同前缀 1822→451ms（像命中），
+   但同长度全新前缀只要 907ms（不像未命中）。差异被连接复用污染，**不足以下结论**。
+   按「不确定就不写进文档当事实」的规矩，只记录现象，不记录结论。
+
+**为什么不去动 prompt**：把时间戳塞进/抽出 system prompt、重排 tools、改写消息，
+都能「让缓存更好命中」，但那是改用户的内容与 agent 的语义，插件无权接管。
+插件能保证的是**不破坏**：U14 断言除 `stream_options` 外 body 逐字节与键序不变。
+
+**翻案条件**：网关开始返回 `prompt_cache_hit_tokens`（或同类字段）时，
+`cache-report.mjs` 的「带 cache_read 的记录」会自己变成非零——那时才能谈命中率优化，
+也才有判据证明优化有效。
+
+**复核判据**：
+```bash
+node tools/cache-report.mjs --provider dumate | head -8
+#   「有 token 记录的 %」重启 magpie 后应不再是 0%
+#   「带 cache_read 的记录」若仍为 0/N，说明网关依旧不报命中
+```

@@ -29,6 +29,7 @@ import { createGuard, classifyResponse } from "./guard.mjs"
 import { desktopUserDataDir } from "./paths.mjs"
 import { loadModels } from "./models.mjs"
 import { normalizeReasoningBody } from "./reasoning.mjs"
+import { withStreamUsage } from "./usage-meter.mjs"
 
 const PROVIDER_ID = "dumate"
 const PROVIDER_NAME = "百度搭子 DuMate"
@@ -620,6 +621,9 @@ export const DuMatePlugin = async (input = {}) => {
             let bodyText = init?.body
             if (bodyText === undefined && req) bodyText = await req.clone().text()
             bodyText = normalizeReasoningBody(bodyText)
+            // Ask for usage on streaming calls so magpie can see tokens and
+            // cache hits at all — 297/297 of this provider's records were 0.
+            bodyText = withStreamUsage(bodyText)
             let cred
             try {
               cred = await fetchGatewayToken(cookieHeaderOf(cookies))

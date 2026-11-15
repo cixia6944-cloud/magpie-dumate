@@ -293,6 +293,35 @@ V4.1 的推理档位统一为 `none / low / high / max`，插件只对 `deepseek
 
 ## 变更记录
 
+### 0.3.4（2026-11-15 让 token 用量可见，并把「缓存」测得清的部分说清楚）
+
+**先说结论：这个网关不上报缓存命中，所以「提高命中率」在插件层做不了，
+能被操纵的只有请求前缀，而前缀是调用方（agent）给的。**
+
+实测过程与数据（都是本机真跑，不是推断）：
+
+- magpie 的 `usage.jsonl` 里 **316/316 条 dumate 记录 `in`/`out`/`cache_read` 全为 0**
+  —— 面板上成本一直显示「—」，不是没花钱，是根本没记上。
+- 原因：OpenAI 兼容的流式响应默认不带 `usage`，要在请求里显式要
+  （`stream_options: { include_usage: true }`）。agent 全走流式，所以那行永远是空。
+- 实测补上之后：`usage = {prompt_tokens: 1201, completion_tokens: 3, total_tokens: 1204}`
+  —— **有 token 了，但没有 `prompt_cache_hit_tokens` 一类的缓存字段**。
+- 同前缀重复调用确实变快（1822ms → 451ms），但同长度换全新前缀也快（907ms），
+  所以**不能**据此断言缓存生效——连接复用和网关预热同样能造成这个现象。
+  三次探测都不足以定论，因此不写「已命中」。
+
+**改动**
+- 新增 `usage-meter.mjs`：流式请求且调用方没指定 `stream_options` 时补
+  `include_usage`。`test-unit` U14 锁住「除了这一个字段，body 逐字节与键序都不许变」
+  —— messages / tools 是上游做前缀缓存的对象，动一个字节就可能从命中变未命中。
+- 新增 `tools/cache-report.mjs`：读 `usage.jsonl`，按 provider/model 出
+  `in/out`、带 cache_read 的比例、ttft p50/p90，以及长会话「开头几条 → 末尾几条」
+  的 ttft 走势，**并明确标注「变快 ≠ 命中缓存」**。
+
+**想把命中率往上推，能动的在调用方**（这些不是插件能做主的）：
+让 system prompt 逐字节稳定（别塞时间戳、随机 ID、当天日期）、tools 定义顺序固定、
+别每轮改 `reasoning_effort`（会换上游模板 → 前缀变）、长会话别频繁新开 session。
+
 ### 0.3.3（2026-11-15 换号闸门 + 签到信息降频，依据是本机真实运行数据）
 
 跑了约 3 小时之后回看 magpie 自己的记录（`~/.config/magpie/quota-history.json`）：
