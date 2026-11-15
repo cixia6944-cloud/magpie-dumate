@@ -23,6 +23,20 @@
 | `Retry-After` 遵守且有 1 小时封顶 | ✅ | U13 的 `retryAfterHeader: "999999"` 用例 |
 | `guard.mjs` 进 `package.json` 的 `files` | ✅ | `node -e "console.log(require('./package.json').files)"` 含 guard.mjs |
 | 节流开关 `DUMATE_MIN_INTERVAL_MS`（离线套件设 0，线上保留） | ✅ | `node run-tests.mjs --quick` 总耗时回落到 ~10s，且 `test-determinism` ≤2s |
+| 换号闸门：refresh 不跨账号复用 seat | ✅ | `node test-bug-regression.mjs` G11 |
+| 签到信息 10 分钟缓存（余额不缓存） | ✅ | `node test-bug-regression.mjs` G10；`test-checkin-branches` 7 条全过 |
+
+## 1.5 真实运行观测（2026-11-15 20:40–23:45，约 3 小时）
+
+| 观测 | 值 | 来源 |
+|---|---|---|
+| usage 轮询采样数 | 23 | `~/.config/magpie/quota-history.json` |
+| 轮询间隔 中位 / 最小 / 最大 | 260s / 63s / 4818s | 同上 |
+| 期间积分消耗 | 30500 → 28398（2102） | `quotas.json` + quota-history |
+| 401 / 429 / 5xx 痕迹 | 无 | 无错误落盘、`logins.json` 无失效重登记录 |
+| 熔断触发次数 | 0 | 无 `riskGuard` 报错出现 |
+
+结论：这一段节奏与凭据链是稳的，所以本轮只做「降请求数」与「堵换号」，不动节流参数。
 
 ## 2. 部署 / 同源化
 

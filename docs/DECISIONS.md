@@ -228,3 +228,26 @@ magpie plugin list | grep -A1 magpie-dumate
 node -e "const j=require(require('os').homedir()+'/.config/magpie/plugin-auth.json').dumate;console.log(j.source,j.accountId.length,j.cookies.length)"
 # 期望 desktop 32 56
 ```
+
+---
+
+## D11 · 2026-11-15 · 缓存按「这个数据还承担什么职责」分，不按请求便宜不便宜分
+
+**决定**：`loginBonusInfo` 缓存 10 分钟；`quota_overview` 不缓存。
+
+**理由**：最初两个都缓存 30 秒，理由是「同一分钟里重复问也是同一个数」。测试立刻推翻了
+这条推理——`test-checkin-branches` 的「登录失效传播」和 `test-edge-cases` 的
+`expireDate=null` 同时变红，因为缓存的成功响应让**已经失效的会话继续报健康余额**。
+
+余额这个字段在这里有双重职责：它是用户看的数字，同时也是「会话还活着吗」的探针。
+缓存它会同时缓存掉「探针失效」这个事实，于是失效要晚 30 秒才被看见——而 30 秒的
+陈旧余额恰好落在用户最容易误解的位置（点开看到有钱，发一句就报错）。
+
+签到信息只有单一职责（今天签没签过、签了几天），缓存它不影响任何判断。
+
+**复核判据**：
+```bash
+node test-bug-regression.mjs | grep G10     # 余额实时、签到按 seat 缓存、不串号
+node test-checkin-branches.mjs; echo "exit=$?"   # 7 条全过（缓存不得掩盖 signIn=expired）
+grep -n "Deliberately not cached" index.mjs      # 余额那段有就地说明，防止以后有人"顺手优化"
+```

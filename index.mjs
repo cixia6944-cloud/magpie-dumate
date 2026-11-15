@@ -396,6 +396,55 @@ function rememberToken(header, entry) {
   }
 }
 
+// ---- Usage snapshot cache ---------------------------------------------------
+//
+// magpie 轮询 usage 的节奏是分钟级（实测这台机器上中位间隔 260 秒，两次相邻轮询
+// 最近只差 63 秒）。每次 usage() 要打两发 console 请求：quota_overview 和
+// loginBonusInfo。后者一天只变一次，前者在 30 秒内重复问也是同一个数。
+//
+// 这些请求不花积分，但每一发都是「行为面」：夜里没人用的时候每 4 分钟准点
+// 两发 console 请求，本身就是一张作息表。签到信息一天只变一次，缓存 10 分钟
+// 没有代价；余额不缓存——它同时是「会话还活着吗」的探针。
+//
+// key 用 cookie 头的摘要而不是头本身：缓存表不该额外多存一份凭据。
+// Only the daily check-in snapshot is cached. Measured on this machine: magpie
+// polls usage every ~260s and each poll asks for both the balance (above) and
+// this one; loginBonusInfo changes once a day, so a 10-minute window turns most
+// of those asks into no-ops without ever affecting a decision that matters.
+const USAGE_TTLS = { bonus: 10 * 60_000 }
+const USAGE_CACHE_MAX = 8
+const usageCache = new Map() // "<kind>\0<digest>" -> { at, value }
+
+const seatDigest = (header) => createHash("sha256").update(String(header ?? "")).digest("hex").slice(0, 16)
+
+async function cachedConsoleGet(kind, path, header) {
+  const key = `${kind}\u0000${seatDigest(header)}`
+  const ttl = USAGE_TTLS[kind] ?? 0
+  const hit = usageCache.get(key)
+  if (hit && Date.now() - hit.at < ttl) return hit.value
+  const value = await consoleGet(path, header)
+  usageCache.set(key, { at: Date.now(), value })
+  if (usageCache.size > USAGE_CACHE_MAX) {
+    for (const k of usageCache.keys()) {
+      if (usageCache.size <= USAGE_CACHE_MAX) break
+      usageCache.delete(k)
+    }
+  }
+  return value
+}
+
+// 桌面端换了账号时，refresh 绝不能把新账号的 Cookie 悄悄顶到旧 seat 上：
+// seat key 不变，magpie 会以为「还是那个号」，而真实凭据已经换人。
+// 返回 false 让它走原来的 401 → signIn=expired 路径，由用户显式重新登录。
+// 任一侧没有 accountId 时保持旧行为（不阻塞正常刷新）。
+export function shouldFollowDesktop(auth, desktop) {
+  if (!desktop) return false
+  const mine = String(auth?.accountId ?? "")
+  const theirs = String(desktop?.accountId ?? "")
+  if (!mine || !theirs) return true
+  return mine === theirs
+}
+
 async function fetchGatewayToken(cookieHeader) {
   const cached = tokenCache.get(cookieHeader)
   if (cached && Date.now() < cached.expiresAt - 5 * 60_000) return cached
@@ -484,6 +533,12 @@ export const DuMatePlugin = async (input = {}) => {
         if (auth?.type !== "oauth" || auth.source !== "desktop") return undefined
         const d = readDesktopLogin()
         if (!d) return undefined
+        // The app may now be signed in to a different account. Following it
+        // would keep this seat key but swap the credentials underneath it, so
+        // magpie would show the old account's name over the new account's
+        // cookies. Refuse; the stale cookies then fail as a normal expired
+        // sign-in and the user re-logs in deliberately.
+        if (!shouldFollowDesktop(auth, d)) return undefined
         const oldHeader = cookieHeaderOf(auth.cookies)
         const newHeader = cookieHeaderOf(d.cookies)
         if (newHeader === oldHeader) return undefined
@@ -621,6 +676,10 @@ export const DuMatePlugin = async (input = {}) => {
           const header = cookieHeaderOf(cookies)
           let overviewError = null
           const [overview, info] = await Promise.all([
+            // Deliberately not cached: this is also the probe that tells us the
+            // session is still alive. A 30s cache would let a dead sign-in keep
+            // reporting a healthy balance, and the user would see a stale number
+            // right up until a chat failed.
             consoleGet(
               "/api/dumate/points/quota_overview?timezone=Asia%2FShanghai&clientType=desktop&ignoreLoginBonus=true",
               header,
@@ -628,7 +687,7 @@ export const DuMatePlugin = async (input = {}) => {
               overviewError = e
               return null
             }),
-            consoleGet("/api/dumate/points/loginBonusInfo", header).catch(() => null),
+            cachedConsoleGet("bonus", "/api/dumate/points/loginBonusInfo", header).catch(() => null),
           ])
           // A dead session is a sign-in problem, not "the quota endpoint is
           // down": rethrow so the signIn=expired marker survives and magpie
@@ -702,7 +761,7 @@ export const DuMatePlugin = async (input = {}) => {
           // "claimed hours ago".
           let before = null
           try {
-            before = await consoleGet("/api/dumate/points/loginBonusInfo", header)
+            before = await cachedConsoleGet("bonus", "/api/dumate/points/loginBonusInfo", header)
           } catch (e) {
             // A dead session here is worth reporting, not swallowing: the POST
             // below would fail with a vaguer message.
@@ -867,6 +926,7 @@ export const _internal = {
   // login and without the network.
   seatIdentity,
   fallbackAccountId,
+  shouldFollowDesktop,
   usableCookies,
   cookieValue,
   readDesktopLogin,
