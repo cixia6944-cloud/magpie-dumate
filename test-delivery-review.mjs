@@ -5,12 +5,21 @@ import { join, dirname } from "node:path"
 import { fileURLToPath } from "node:url"
 
 const here = dirname(fileURLToPath(import.meta.url))
+
+// 源码与文档一律按 LF 归一后再做正则断言。
+// 起因：Windows + core.autocrlf=true 会把工作区换成 CRLF，而本套件里
+// `/instructions:[\s\S]*?,\n\s*method/` 这类模式依赖裸 "\n"，于是同一份代码
+// 在 LF 机器上 5 条全过、在 CRLF 机器上必挂「只找到 0 组 instructions」。
+// 仓库里同时加了 .gitattributes 强制 LF；这里再兜一层，避免别人用别的方式
+// 检出时又把它当成代码 bug 排查。
+const readLf = (p) => readFileSync(p, "utf8").replace(/\r\n/g, "\n")
+
 const ok = (n, extra = "") => console.log(`  PASS ${n}${extra ? " · " + extra : ""}`)
 const fail = (n, e) => { console.error(`  FAIL ${n}:`, e?.message ?? e); process.exitCode = 1 }
 
 console.log("[U1] 三种登录方式的 instructions 可操作性与一致性")
 try {
-  const src = readFileSync(join(here, "index.mjs"), "utf8")
+  const src = readLf(join(here, "index.mjs"))
   const instructions = [...src.matchAll(/instructions:\s*\n?\s*([\s\S]*?)(?=,\n\s*method)/g)].map((m) => m[1])
   if (instructions.length < 2) throw new Error("只找到 " + instructions.length + " 组 instructions")
   const joined = instructions.join("\n")
@@ -28,8 +37,8 @@ try {
 
 console.log("[U2] README 与实际登录字段一致（防文档漂移）")
 try {
-  const readme = readFileSync(join(here, "README.md"), "utf8")
-  const src = readFileSync(join(here, "index.mjs"), "utf8")
+  const readme = readLf(join(here, "README.md"))
+  const src = readLf(join(here, "index.mjs"))
   const requiredInCode = src.match(/REQUIRED_COOKIES = \[([^\]]+)\]/)?.[1] ?? ""
   const reqNames = [...requiredInCode.matchAll(/"([^"]+)"/g)].map((m) => m[1])
   if (!reqNames.length) throw new Error("REQUIRED_COOKIES 解析失败")
@@ -43,7 +52,7 @@ try {
 
 console.log("[U3] 错误信息的用户视角质量（全部中文、有下一步动作）")
 try {
-  const src = readFileSync(join(here, "index.mjs"), "utf8")
+  const src = readLf(join(here, "index.mjs"))
   const msgs = [...src.matchAll(/(?:new Error|message:)\s*[`"']([^`"']+)[`"']/g)].map((m) => m[1])
   const userFacing = msgs.filter((m) => /DuMate|Cookie|登录|token/i.test(m))
   for (const m of userFacing) {
@@ -61,7 +70,7 @@ try {
 
 console.log("[U4] 醒来后的操作命令可直接复制执行（路径有效性）")
 try {
-  const readme = readFileSync(join(here, "README.md"), "utf8")
+  const readme = readLf(join(here, "README.md"))
   const addCmd = readme.match(/magpie plugin add (\S+)/)?.[1]
   if (!addCmd) throw new Error("README 无 plugin add 命令")
   // 相对路径 ./magpie-dumate 在本项目位置也成立；绝对路径检查存在性
@@ -75,7 +84,7 @@ try {
 console.log("[U5] quota 显示对'从未签过到的新用户'的鲁棒性（字段缺省推演）")
 try {
   // loginBonusInfo 可能返回无 totalTimes/totalPoints 的新号——推演 usage/checkin 不崩
-  const src = readFileSync(join(here, "index.mjs"), "utf8")
+  const src = readLf(join(here, "index.mjs"))
   // usage 读取处应有 ?? 兜底
   const usageBlock = src.match(/async usage\(getAuth\) \{[\s\S]*?\n      \},/)?.[0] ?? ""
   if (!/\?\?/.test(usageBlock)) throw new Error("usage 无空值兜底")

@@ -1,0 +1,19 @@
+# 强制 LF：仓库里所有源码在检出时都必须是 LF。
+#
+# 起因：上游没有这个文件，Windows 上 core.autocrlf=true 会把工作区转成 CRLF，
+# 而 test-delivery-review.mjs 里有 `/instructions:[\s\S]*?,\n\s*method/` 这类
+# 依赖 "\n" 的正则，于是同一份代码在 LF 机器上全过、在 CRLF 机器上必挂一条。
+# 断言本身也已改成容忍 CRLF，两层都做是为了不让同类问题再靠运气。
+* text=auto eol=lf
+
+*.mjs  text eol=lf
+*.js   text eol=lf
+*.json text eol=lf
+*.md   text eol=lf
+*.sh   text eol=lf
+
+# 二进制资源不做行尾转换
+*.png  binary
+*.svg  text eol=lf
+*.exe  binary
+*.dmg  binary
