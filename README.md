@@ -293,6 +293,33 @@ V4.1 的推理档位统一为 `none / low / high / max`，插件只对 `deepseek
 
 ## 变更记录
 
+### 0.3.1（2026-11-15 本地维护支线：行尾、多账号、API id 去重、Cookie 头加固）
+
+这一段**不在上游**。仓库 `R227BOUT/magpie-dumate` 仍是事实来源，
+本机这份是同一份源码的本地检出，在上面叠了本地提交（具体路径不入库——脱敏闸门会拦绝对路径），
+决策与待办见同目录 `docs/`。没有向 GitHub 推送任何东西。
+
+- **行尾固定为 LF**（新增 `.gitattributes`）：上游没有这个文件，Windows 上
+  `core.autocrlf=true` 会把工作区转成 CRLF，而 `test-delivery-review` 里
+  `/instructions:[\s\S]*?,\n\s*method/` 依赖裸 `\n`，于是同一份代码在 LF 机器上全过、
+  在 CRLF 机器上必挂一条「只找到 0 组 instructions」。断言本身也改成读文件时归一，
+  两层都做：实测 CRLF 检出下 21 个离线套件全过。
+- **多账号不再互相顶掉**（上游 issue #3）：三条登录路径在没有 `bceAccountId` 时都退化成
+  常量 `PROVIDER_NAME`，两个账号于是共用一个 seat key，后加的覆盖前一个。改为
+  `seatIdentity()` 派生稳定 id（优先 app 的 `profileId`，否则 cookie 集的摘要），
+  显示名也带上后缀以便在账号列表里区分。**真实 `bceAccountId` 原样透传**，
+  已有 seat 的 key 不变，不会因为升级掉登录。
+- **重复 API id 收敛为一个入口**（上游 issue #6）：原有别名规则只在「源里存在同名规范键」
+  时生效；当两个别名都指向 `model-text` 而源里没有 `model-text` 键时，两个入口都会进
+  模型列表，切换等于空操作。改为按 API id 去重，规范键优先，计数进 `excluded`。
+- **Cookie 头加固**：`buildCookieHeader` / `cookieHeaderOf` / `parseCookieString` 统一过
+  一层白名单——名字必须是 RFC 6265 token，值里的控制字符剥掉。裸 CR/LF 会把我们自己
+  拼的 Cookie 头切成两条，是唯一真实的头注入入口。三处原来各拼各的，现在共用一个函数。
+- **token 缓存设上限**（16 条，FIFO 淘汰）：key 是整串 Cookie 凭据，反复增删账号时
+  不该无限增长；被淘汰的下次多一次换 token，不会拿到错的。
+- 新增回归用例：`test-desktop-paths` P8/P9（两账号两 key、真实 id 透传）、
+  `test-model-catalog` C13（API id 去重）、`test-unit` U9（头注入）。离线套件 124 条全过。
+
 ### 0.3.0（2026-11-13 修复 macOS 登录识别 + 导入真实模型清单）
 
 本轮问题由公众号「HelloRanceLee」作者 **RanceLee** 在当天的文章中发现并提出完整解决方案，
