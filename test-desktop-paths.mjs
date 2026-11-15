@@ -4,7 +4,7 @@ import { mkdirSync, writeFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
-const { readDesktopLogin } = _internal
+const { readDesktopLogin, seatIdentity, fallbackAccountId } = _internal
 const ok = (n) => console.log(`  PASS ${n}`)
 const fail = (n, e) => { console.error(`  FAIL ${n}:`, e?.message ?? e); process.exitCode = 1 }
 // Temp dir comes from the OS, never from a hardcoded home directory: a
@@ -112,5 +112,36 @@ try {
   if (r !== null) throw new Error("空 cookie 数组应拒绝")
   ok("空 cookies → null")
 } catch (e) { fail("空 cookies", e) }
+
+// 上游 issue #3：两个都没有 bceAccountId 的账号，accountId 都退化成同一个常量，
+// magpie 按 accountId 存 seat，于是第二个把第一个顶掉。判据：两个不同登录必须
+// 派生两个不同 key，且真实 bceAccountId 一个字都不能变（否则已有 seat 会失联）。
+console.log("[P8] 多账号：没有 bceAccountId 时按登录本身派生 seat key")
+try {
+  const a = seatIdentity({ cookies: [{ name: "bce-sessionid", value: "aaa" }], profileId: "profile-1" })
+  const b = seatIdentity({ cookies: [{ name: "bce-sessionid", value: "bbb" }], profileId: "profile-2" })
+  if (a.accountId === b.accountId) throw new Error("两个账号派生出同一个 accountId: " + a.accountId)
+  if (a.accountId === "百度搭子 DuMate") throw new Error("仍然退化成常量 PROVIDER_NAME")
+  if (a.name === b.name) throw new Error("两个账号显示名相同，UI 里分不清: " + a.name)
+  // 同一个登录重复推导必须稳定（否则重启 magpie 会凭空多出一个 seat）
+  if (fallbackAccountId({ profileId: "profile-1" }) !== fallbackAccountId({ profileId: "profile-1" })) {
+    throw new Error("同一登录两次推导结果不同，seat 会在每次重启后重建")
+  }
+  // 没有 profileId 时退回 cookie 摘要，仍然必须区分得开
+  const c = seatIdentity({ cookies: [{ name: "bce-sessionid", value: "ccc" }] })
+  const d = seatIdentity({ cookies: [{ name: "bce-sessionid", value: "ddd" }] })
+  if (c.accountId === d.accountId) throw new Error("无 profileId 时退化成同一个 key")
+  ok("两账号两个 key、同名不撞、推导可重复")
+} catch (e) { fail("多账号 seat key", e) }
+
+console.log("[P9] 真实 bceAccountId 原样透传（不让已有 seat 失联）")
+try {
+  const real = seatIdentity({ accountId: "bce-account-0001", name: "某账号", cookies: [{ name: "a", value: "b" }] })
+  if (real.accountId !== "bce-account-0001") throw new Error("bceAccountId 被改写: " + real.accountId)
+  if (real.name !== "某账号") throw new Error("displayName 被改写: " + real.name)
+  const bare = seatIdentity({})
+  if (bare.accountId !== "百度搭子 DuMate") throw new Error("空登录不应伪造 id: " + bare.accountId)
+  ok("真实 id 与显示名不动，空登录仍保持原常量")
+} catch (e) { fail("seat key 兼容性", e) }
 
 console.log(process.exitCode ? "\n== 有失败项 ==" : "\n== 全部通过 ==")

@@ -153,4 +153,29 @@ try {
   }
 } catch (e) { fail("插件自带图标", e) }
 
+// Cookie 值来自加密文件和解密后的粘贴串，两者都可能被人塞进带 CR/LF 的内容。
+// 裸的 CR/LF 会把我们自己构造的 Cookie 头切成两行，等于凭空多出一条请求头 ——
+// 这是头注入的唯一真实入口，判据就是「拼出来的头里不允许出现 CR 或 LF」。
+console.log("[U9] Cookie 头：控制字符与非法名一律丢弃")
+try {
+  const hostile = [
+    { name: "bce-sessionid", value: "legit" },
+    { name: "bad name", value: "x" },
+    { name: "spaced name", value: "y" },
+    { name: "evil", value: "a\r\nX-Injected: 1" },
+    { name: "", value: "z" },
+  ]
+  const header = buildCookieHeader(hostile, "console.bce.baidu.com")
+  if (/[\r\n\u0000]/.test(header)) throw new Error("拼出的 Cookie 头里仍有 CR/LF/NUL")
+  if (!header.includes("bce-sessionid=legit")) throw new Error("正常 cookie 被误删")
+  if (/bad name|spaced name/.test(header)) throw new Error("含空格的非法名没有被过滤")
+  // 值里的控制字符被剥掉，剩下的内容仍在（不静默丢整条 cookie）
+  if (!header.includes("evil=")) throw new Error("带控制字符的合法 cookie 被整条丢弃")
+
+  const parsed = parseCookieString("bad name=x; bce-sessionid=ok; =empty")
+  if (parsed.length !== 1) throw new Error("解析后应只剩 1 条合法 cookie，实际 " + parsed.length)
+  if (parsed[0].name !== "bce-sessionid") throw new Error("留下的不是合法项: " + parsed[0].name)
+  ok("CR/LF 无出口，非法名丢弃，合法项保留")
+} catch (e) { fail("Cookie 头注入防护", e) }
+
 console.log(process.exitCode ? "\n== 有失败项 ==" : "\n== 全部通过 ==")

@@ -22,7 +22,7 @@
 // reported the macOS sign-in failure and proposed the solution on 2026-11-13.
 // See README.md -> 致谢.
 
-import { createDecipheriv } from "node:crypto"
+import { createDecipheriv, createHash } from "node:crypto"
 import { readFileSync, statSync } from "node:fs"
 import { join } from "node:path"
 import { desktopUserDataDir } from "./paths.mjs"
@@ -145,6 +145,10 @@ function readDesktopLogin() {
     return {
       cookies: arr,
       accountId: String(profile?.bceAccountId ?? auth?.accountProfiles?.[0]?.bceAccountId ?? ""),
+      // profileId is the app's own per-seat identifier. It is not shown anywhere,
+      // but it lets fallbackAccountId() tell two seats apart when the account has
+      // no bceAccountId.
+      profileId: String(profile?.profileId ?? ""),
       name: String(profile?.displayName ?? auth?.accountProfiles?.[0]?.displayName ?? ""),
       source: "desktop",
     }
@@ -155,18 +159,31 @@ function readDesktopLogin() {
 
 // ---- Cookie helpers (replicates DuMate's utils/cookie.js exactly) ----------
 
+// Cookie names and values reach us from an encrypted app file and from the
+// clipboard. A value carrying CR/LF would split our own header, and a name that
+// contains a space or "=" would rewrite the rest of it — both are shapes of
+// pasted junk, never of a real cookie. Nothing outside RFC 6265's token set is
+// allowed through.
+const COOKIE_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]{1,128}$/
+
+// Strip the quote wrapping and any control character; keep everything else so a
+// real (occasionally quoted) Baidu value survives byte for byte.
+const cookieValue = (v) => String(v ?? "").replace(/[\u0000-\u001f\u007f]/g, "").replace(/^["']+|["']+$/g, "")
+
+const usableCookies = (list) => (Array.isArray(list) ? list : []).filter((c) => COOKIE_NAME.test(String(c?.name ?? "")))
+
 // Serialize cookies for a hostname the way DuMate does: domain-filter, strip
 // quotes, re-quote values containing : | ; = or spaces. POST endpoints reject
 // the request ("登录凭证已过期") when the header is built any other way.
 function buildCookieHeader(cookies, hostname) {
-  const matched = cookies.filter((c) => {
+  const matched = usableCookies(cookies).filter((c) => {
     if (!c.domain) return true
     const domain = c.domain.startsWith(".") ? c.domain.slice(1) : c.domain
     return hostname === domain || hostname.endsWith("." + domain)
   })
   return matched
     .map((c) => {
-      let val = String(c.value ?? "").replace(/^["']+|["']+$/g, "")
+      let val = cookieValue(c.value)
       if (/[:|;=\s]/.test(val)) val = `"${val}"`
       return `${c.name}=${val}`
     })
@@ -175,13 +192,13 @@ function buildCookieHeader(cookies, hostname) {
 
 // csrftoken comes from the bce-user-info cookie value for the target host.
 function extractCsrfToken(cookies, hostname) {
-  const hit = cookies.find((c) => {
+  const hit = usableCookies(cookies).find((c) => {
     if (c.name !== "bce-user-info") return false
     if (!hostname || !c.domain) return false
     const domain = c.domain.startsWith(".") ? c.domain.slice(1) : c.domain
     return hostname === domain || hostname.endsWith("." + domain)
   })
-  return hit ? String(hit.value ?? "").replace(/^["']+|["']+$/g, "") : ""
+  return hit ? cookieValue(hit.value) : ""
 }
 
 // Parse a pasted "name=value; name2=value2" string into DuMate cookie objects.
@@ -193,12 +210,36 @@ function parseCookieString(raw) {
     const idx = part.indexOf("=")
     if (idx <= 0) continue
     const name = part.slice(0, idx).trim()
-    let value = part.slice(idx + 1).trim()
-    if (!name) continue
-    if (value.startsWith('"') && value.endsWith('"')) value = value.slice(1, -1)
+    if (!COOKIE_NAME.test(name)) continue
+    let value = cookieValue(part.slice(idx + 1).trim())
     out.push({ name, value, domain: ".baidu.com" })
   }
   return out
+}
+
+// A seat's identity inside magpie is its accountId. Every login path used to
+// fall back to the constant PROVIDER_NAME when the account had no bceAccountId,
+// so a second account got the same key as the first and silently replaced it
+// (upstream issue #3). Derive a stable per-login id instead: the app's profileId
+// when it provides one, otherwise a digest of the cookie set itself. Real
+// bceAccountId values still pass through untouched, so seats that already have a
+// proper key keep exactly the same one.
+function fallbackAccountId(login) {
+  const cookies = usableCookies(login?.cookies)
+  const seed = String(login?.profileId || "") ||
+    cookies.map((c) => `${c.name}=${cookieValue(c.value)}`).join("; ")
+  if (!seed) return PROVIDER_NAME
+  return `dumate-${createHash("sha256").update(seed).digest("hex").slice(0, 12)}`
+}
+
+// accountId plus a name that is actually distinguishable in magpie's account
+// list — two seats both called "百度搭子 DuMate" is what made the overwrite look
+// like a mystery.
+function seatIdentity(login) {
+  const accountId = String(login?.accountId || "") || fallbackAccountId(login)
+  const name = String(login?.name || "") ||
+    (accountId === PROVIDER_NAME ? PROVIDER_NAME : `DuMate ${accountId.slice(-6)}`)
+  return { accountId, name }
 }
 
 // BDUSS/STOKEN/bce-sessionid are httpOnly, so document.cookie can never carry
@@ -314,6 +355,22 @@ async function consolePost(path, body, cookies) {
 
 const tokenCache = new Map() // cookieHeader -> { token, expiresAt, pending }
 
+// One entry per cookie set, and the key is a full credential — so the map must
+// not grow without bound when seats are added and removed over and over. Keep
+// the newest few and let the dropped ones re-derive on next use (one extra round
+// trip, never a wrong token).
+const TOKEN_CACHE_MAX = 16
+function rememberToken(header, entry) {
+  tokenCache.set(header, entry)
+  if (tokenCache.size <= TOKEN_CACHE_MAX) return
+  for (const key of tokenCache.keys()) {
+    if (tokenCache.size <= TOKEN_CACHE_MAX) break
+    // In-flight single-flight markers own their own lifecycle in .finally().
+    if (key.endsWith("\u0000pending")) continue
+    tokenCache.delete(key)
+  }
+}
+
 async function fetchGatewayToken(cookieHeader) {
   const cached = tokenCache.get(cookieHeader)
   if (cached && Date.now() < cached.expiresAt - 5 * 60_000) return cached
@@ -329,7 +386,7 @@ async function fetchGatewayToken(cookieHeader) {
     tokenCache.set(cookieHeader + "\u0000pending", pending)
   }
   const next = await pending
-  tokenCache.set(cookieHeader, next)
+  rememberToken(cookieHeader, next)
   return next
 }
 
@@ -350,7 +407,7 @@ export const DuMatePlugin = async (input = {}) => {
     return err
   }
 
-  const cookieHeaderOf = (cookies) => cookies.map((c) => `${c.name}=${c.value}`).join("; ")
+  const cookieHeaderOf = (cookies) => usableCookies(cookies).map((c) => `${c.name}=${cookieValue(c.value)}`).join("; ")
 
   return {
     config: async (config) => {
@@ -402,16 +459,17 @@ export const DuMatePlugin = async (input = {}) => {
         if (auth?.type !== "oauth" || auth.source !== "desktop") return undefined
         const d = readDesktopLogin()
         if (!d) return undefined
-        const oldHeader = (auth.cookies ?? []).map((c) => `${c.name}=${c.value}`).join("; ")
-        const newHeader = d.cookies.map((c) => `${c.name}=${c.value}`).join("; ")
+        const oldHeader = cookieHeaderOf(auth.cookies)
+        const newHeader = cookieHeaderOf(d.cookies)
         if (newHeader === oldHeader) return undefined
+        const seat = seatIdentity({ ...d, accountId: d.accountId || auth.accountId, name: d.name || auth.name })
         return {
           access: "cookie:" + newHeader,
           refresh: "",
           expires: 0,
           source: "desktop",
-          accountId: d.accountId || auth.accountId,
-          name: d.name || auth.name || "",
+          accountId: seat.accountId,
+          name: seat.name,
           cookies: d.cookies,
         }
       },
@@ -661,14 +719,15 @@ export const DuMatePlugin = async (input = {}) => {
                   error: "未检测到本机百度搭子登录态（qianfan-desktop-app/auth.json）。请先安装并登录百度搭子，或改用浏览器登录方式。",
                 }
               }
+              const seat = seatIdentity(d)
               return {
                 type: "success",
-                access: "cookie:" + d.cookies.map((c) => `${c.name}=${c.value}`).join("; "),
+                access: "cookie:" + cookieHeaderOf(d.cookies),
                 refresh: "",
                 expires: 0,
                 source: "desktop",
-                accountId: d.accountId || PROVIDER_NAME,
-                name: d.name || "",
+                accountId: seat.accountId,
+                name: seat.name,
                 cookies: d.cookies,
               }
             },
@@ -693,7 +752,7 @@ export const DuMatePlugin = async (input = {}) => {
               if (missing.length) {
                 return { type: "failed", error: `Cookie 缺少关键字段：${missing.join(", ")}。请确认复制的是 DevTools Network 面板请求头里的 Cookie 值（不是 document.cookie）` }
               }
-              const header = cookies.map((c) => `${c.name}=${c.value}`).join("; ")
+              const header = cookieHeaderOf(cookies)
               // Probe: validate the cookies actually work before accepting.
               let info = null
               try {
@@ -701,14 +760,15 @@ export const DuMatePlugin = async (input = {}) => {
               } catch (e) {
                 return { type: "failed", error: `Cookie 验证失败：${e?.message ?? e}。请重新登录并复制新的 Cookie` }
               }
+              const seat = seatIdentity({ accountId: info?.bceAccountId, name: info?.displayName, cookies })
               return {
                 type: "success",
                 access: "cookie:" + header,
                 refresh: "",
                 expires: 0,
                 source: "browser",
-                accountId: String(info?.bceAccountId ?? PROVIDER_NAME),
-                name: String(info?.displayName ?? ""),
+                accountId: seat.accountId,
+                name: seat.name,
                 cookies,
               }
             },
@@ -727,21 +787,22 @@ export const DuMatePlugin = async (input = {}) => {
               if (cookies.length < 2) return { type: "failed", error: "无法解析 Cookie 字符串" }
               const missing = REQUIRED_COOKIES.filter((n) => !cookies.some((c) => c.name === n))
               if (missing.length) return { type: "failed", error: `Cookie 缺少关键字段：${missing.join(", ")}` }
-              const header = cookies.map((c) => `${c.name}=${c.value}`).join("; ")
+              const header = cookieHeaderOf(cookies)
               let info = null
               try {
                 info = await consoleGet("/api/dumate/user/info", header)
               } catch (e) {
                 return { type: "failed", error: `Cookie 验证失败：${e?.message ?? e}` }
               }
+              const seat = seatIdentity({ accountId: info?.bceAccountId, name: info?.displayName, cookies })
               return {
                 type: "success",
                 access: "cookie:" + header,
                 refresh: "",
                 expires: 0,
                 source: "manual",
-                accountId: String(info?.bceAccountId ?? PROVIDER_NAME),
-                name: String(info?.displayName ?? ""),
+                accountId: seat.accountId,
+                name: seat.name,
                 cookies,
               }
             },
@@ -759,6 +820,12 @@ export const _internal = {
   parseCookieString,
   buildCookieHeader,
   extractCsrfToken,
+  // Seat identity + cookie sanitising are pure, so they are testable without a
+  // login and without the network.
+  seatIdentity,
+  fallbackAccountId,
+  usableCookies,
+  cookieValue,
   readDesktopLogin,
   desktopUserDataDir,
   iconFromPluginDir,

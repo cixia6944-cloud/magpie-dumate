@@ -11,6 +11,32 @@ import { tmpdir } from "node:os"
 const ok = (n, extra = "") => console.log(`  PASS ${n}${extra ? " · " + extra : ""}`)
 const fail = (n, e) => { console.error(`  FAIL ${n}:`, e?.message ?? e); process.exitCode = 1 }
 const dir = join(tmpdir(), "dumate-catalog-test")
+// 上游 issue #6：两个别名都声明 id 为 "model-text"、而源里并没有 "model-text" 这个键时，
+// 原有别名规则抓不到，两个入口都进模型列表 —— 用户在 UI 里切换，发出去的是同一个上游，
+// 看起来"切了没用"。判据：导入结果里每个 API id 只出现一次。
+console.log("[C13] 同一上游 id 的多个别名收敛为一个入口")
+try {
+  const dup = importModels({ provider: { QianfanPersonalQuota: { models: {
+    "glm-4": { id: "model-text", limit: { context: 1000, output: 100 } },
+    "glm-5": { id: "model-text", limit: { context: 1000, output: 100 } },
+    "deepseek-v41-flash": { id: "deepseek-v41-flash", limit: { context: 2000, output: 200 } },
+  } } } })
+  const ids = Object.values(dup.models).map((m) => m.id)
+  if (new Set(ids).size !== ids.length) throw new Error("导入结果仍有重复 API id: " + ids.join(","))
+  if (ids.filter((x) => x === "model-text").length !== 1) throw new Error("model-text 没有收敛到一个入口")
+  if (!dup.models["deepseek-v41-flash"]) throw new Error("不相干入口被误删")
+  if (dup.excluded < 1) throw new Error("excluded 计数没反映被合并的别名")
+
+  // 规范键优先：源里同时存在 "model-text" 与指向它的别名时，留下的必须是 "model-text"
+  const canon = importModels({ provider: { QianfanPersonalQuota: { models: {
+    "glm-5": { id: "model-text", limit: { context: 1000, output: 100 } },
+    "model-text": { id: "model-text", limit: { context: 1000, output: 100 } },
+  } } } })
+  if (!canon.models["model-text"]) throw new Error("别名把同 id 的规范键顶掉了")
+  if (Object.keys(canon.models).length !== 1) throw new Error("应为 1 个入口，实际 " + Object.keys(canon.models).join(","))
+  ok("重复 API id 收敛为一个入口，规范键优先")
+} catch (e) { fail("API id 去重", e) }
+
 rmSync(dir, { recursive: true, force: true })
 mkdirSync(dir, { recursive: true })
 const sourcePath = join(dir, "opencode.json")

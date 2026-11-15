@@ -67,6 +67,30 @@ export function importModels(config) {
       modalities: { input, output: ["text"] },
     }
   }
+  // Two different keys can declare the same upstream id — seen on a real
+  // account, where two display aliases both carried id "model-text". The
+  // existing check above only catches an alias whose target key is also present
+  // in the source; when the target key is absent, both aliases survive, magpie
+  // lists two entries, and picking either one sends the same upstream model, so
+  // switching looks like a no-op (upstream issue #6). Collapse to one entry per
+  // API id: the key that *is* the id wins, otherwise the first seen.
+  const byApiId = new Map()
+  for (const key of Object.keys(models)) {
+    const apiId = models[key].id
+    const kept = byApiId.get(apiId)
+    if (!kept) {
+      byApiId.set(apiId, key)
+      continue
+    }
+    if (key === apiId) {
+      delete models[kept]
+      byApiId.set(apiId, key)
+      excluded++
+      continue
+    }
+    delete models[key]
+    excluded++
+  }
   if (!Object.keys(models).length) throw new Error("No chat models in DuMate catalog")
   return { schema: 1, models, excluded }
 }
