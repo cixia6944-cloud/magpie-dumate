@@ -131,3 +131,26 @@ curl -s https://api.github.com/repos/R227BOUT/magpie-dumate/pulls?state=closed \
 node test-magpie-upgrade.mjs; echo "exit=$?"     # SKIP 且 exit=0
 grep -c "test-heartbeat" run-tests.mjs           # 应为 0（确实不在 runner 里）
 ```
+
+---
+
+## D8 · 2026-11-15 · 用 `plugin add <本地路径>` + CLI 登录方式 1 部署，不复制文件
+
+**决定**：`magpie plugin add .` 登记本地 spec；登录用 `magpie plugin login dumate` 后
+从三个方式里选 1（桌面登录态复用），CLI 需要交互，用 `printf '1\n' |` 喂选择。
+
+**理由**：本地 spec 是原地加载，「仓库 = 部署目录」才成立；复制到 `.config/magpie` 会出现
+第二份代码。实测 CLI 启动的 host 自带代理环境变量（`HTTPS_PROXY=127.0.0.1:10808`），
+而网关是境内域名，直连与代理都通——记录在此，避免以后把网络问题归因错。
+
+**实测证据**：`plugin list` → `dumate (百度搭子 DuMate, 22 models) signed in`；
+`Usage` hook 返回真实余额；magpie 自己的 seat 显示 id（32 位十六进制）与
+`plugin-auth.json` 里的 `accountId`（真实 `bceAccountId`）不是同一个值——那是宿主的内部哈希，
+**不要拿 `plugin list` 的显示值判断 accountId 是否被改写**。
+
+**复核判据**：
+```bash
+magpie plugin list | grep -A1 magpie-dumate
+node -e "const j=require(require('os').homedir()+'/.config/magpie/plugin-auth.json').dumate;console.log(j.source,j.accountId.length,j.cookies.length)"
+# 期望 desktop 32 56
+```

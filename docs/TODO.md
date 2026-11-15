@@ -23,9 +23,12 @@
 | 项 | 状态 | 判据 |
 |---|---|---|
 | 仓库是唯一事实来源 | ✅ | 部署目录就是本仓库（本地 spec 原地加载），没有第二份拷贝 |
-| 在 magpie 里登记 spec | ⏳ 待做 | `magpie plugin list` 出现 `dumate`，且 `plugin-providers.json` 里 `id=dumate` 的 `spec` 指向本仓库绝对路径 |
-| 桌面登录态接上 | ⏳ 待做 | `magpie plugin login dumate` 成功；Usage 页出现积分余额 |
-| 真实签到跑一次 | ⏳ 待做 | `magpie` 的 checkin 日志出现 `claimed` 或 `done`，且积分差额与接口一致 |
+| 在 magpie 里登记 spec | ✅ | `magpie plugin list` 出现 `dumate (百度搭子 DuMate, 22 models)`；`plugin-providers.json` 里 `id=dumate` 的 `spec` = 本仓库路径 |
+| 桌面登录态接上 | ✅ | `plugin login dumate` 选方式 1 返回 `signed in`；`plugin-auth.json` 里 `source=desktop`、`cookies` 56 条 |
+| 积分链路真实可用 | ✅ | `hooks.auth.usage()` 返回 `30499.79 / 30500.00 积分`，到期 `2026-11-22`，`signIn: kept`（只调 /points 接口，不耗积分） |
+| 真实模型清单导入 | ✅ | 本机 `opencode.json` 导入 22 个入口、22 个唯一 API id、0 重复；快照落在 `~/.config/magpie/magpie-dumate/models.snapshot.json` |
+| 插件侧签到单独跑一次 | ⏳ 待做 | 客户端今天已自行签到（usage 显示「已签到 1 天」），插件 `checkin` hook 尚未单独验证：等 magpie 下一次调度，看是否返回 `done`（不是 `claimed`） |
+| 真实聊天一次 | ⏳ 待做 | 需要用户点头：会消耗积分（实测每轮约 0.08 积分） |
 
 ## 3. ⛔ 阻塞（只有用户能做）
 
