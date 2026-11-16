@@ -2,7 +2,7 @@
 // 通过 _internal 导出避免重复实现。
 import { DuMatePlugin, _internal } from "./index.mjs"
 import { createGuard, classifyResponse } from "./guard.mjs"
-import { withStreamUsage } from "./usage-meter.mjs"
+import { withStreamUsage, bodyBreakdown, formatBreakdown } from "./usage-meter.mjs"
 
 const { parseCookieString, buildCookieHeader, extractCsrfToken } = _internal ?? {}
 const ok = (n) => console.log(`  PASS ${n}`)
@@ -282,5 +282,26 @@ try {
   if (withStreamUsage("not-json") !== "not-json") throw new Error("非 JSON 不该被改写")
   ok("只补 include_usage，字段与键序原样，显式设置优先")
 } catch (e) { fail("流式 usage", e) }
+
+// 网关不缓存前缀、也不吃 gzip（实测 400 malformed_json），所以上行体积是全价。
+// 要查钱花在哪，只能做体积分解；这里保证分解只看字节、不碰内容。
+console.log("[U15] 上行体积分解：只报字节，不泄漏内容")
+try {
+  const secret = "SHOULD-NOT-APPEAR-IN-OUTPUT"
+  const body = JSON.stringify({
+    model: "deepseek-v41-flash", stream: true, temperature: 0,
+    messages: [{ role: "user", content: secret.repeat(50) }],
+    tools: [{ type: "function", function: { name: "t", description: "d".repeat(3000) } }],
+  })
+  const bd = bodyBreakdown(body)
+  if (!bd) throw new Error("合法 JSON 应能分解")
+  if (bd.messages <= 0 || bd.tools <= 0) throw new Error("分项没算出来: " + JSON.stringify(bd))
+  if (bd.total !== Buffer.byteLength(body, "utf8")) throw new Error("总量与原文不符")
+  const line = formatBreakdown(bd)
+  if (line.includes(secret)) throw new Error("分解结果泄漏了正文内容")
+  if (!/messages .*\+ tools/.test(line)) throw new Error("格式不对: " + line)
+  if (bodyBreakdown("not-json") !== null) throw new Error("非 JSON 应返回 null")
+  ok("分解出 messages/tools/总量，且不含正文")
+} catch (e) { fail("体积分解", e) }
 
 console.log(process.exitCode ? "\n== 有失败项 ==" : "\n== 全部通过 ==")

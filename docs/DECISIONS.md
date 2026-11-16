@@ -281,3 +281,34 @@ node tools/cache-report.mjs --provider dumate | head -8
 #   「有 token 记录的 %」重启 magpie 后应不再是 0%
 #   「带 cache_read 的记录」若仍为 0/N，说明网关依旧不报命中
 ```
+
+---
+
+## D13 · 2026-11-16 · 前缀缓存与压缩：都实测过，都不成立，所以不做
+
+**背景**：用户判断「百度搭子命中率堪忧」。这个判断需要测量支撑，否则只是猜。
+
+**实测（全部本机真跑）**
+
+1. **交错 A/B，各 3 次，~6k tokens 前缀**（`tools/cache-probe.mjs`）：
+   - 稳定前缀首字节 1377 / 650 / 748 ms（中位 **748**）
+   - 同长度全新前缀 671 / 581 / 1139 ms（中位 **671**）
+   - 差 −77ms，方向还是反的 → **判为无差异**。
+2. **`stream_options.include_usage`**（D12）：usage 能要到，但只有
+   `prompt_tokens / completion_tokens / total_tokens`，**没有任何缓存命中字段**。
+3. **gzip 上传**：`Content-Encoding: gzip` + 压缩体 → 网关返回
+   `400 malformed_json / 请求体不是一个合法的json` → **不支持压缩传输**。
+
+**决定**：
+- 不在插件里做「提高缓存命中」的任何事——没有可作用的对象，做了也是猜。
+- 不做 gzip（网关拒收）。
+- 把探针和结论一起留在仓库里（`tools/cache-probe.mjs`），网关升级后可以复测。
+
+**一个更硬的发现**：既然不缓存、不压缩，上行体积就是全价。而本机 557 条 dumate 记录里
+**上行 p50 557KB、p90 1.9MB、p99 4.0MB、最大 4.2MB，累计 434MB**。所以真正该治的是体积，
+不是命中率。为此加了 `DUMATE_SIZE_LOG=1` 时的**体积分解**（只报字节，不读内容，U15 锁住
+「输出里不含正文」），用来判断这 557KB 是工具 schema 还是历史消息。
+
+**翻案条件**：
+- 网关开始返回 `prompt_cache_hit_tokens` 一类字段，或 A/B 出现 >500ms 且方向一致的差异；
+- 网关接受 `Content-Encoding: gzip`（回归判据：探针脚本 + 一次手工 POST 不再 400）。

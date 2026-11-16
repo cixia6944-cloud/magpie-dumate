@@ -29,7 +29,7 @@ import { createGuard, classifyResponse } from "./guard.mjs"
 import { desktopUserDataDir } from "./paths.mjs"
 import { loadModels } from "./models.mjs"
 import { normalizeReasoningBody } from "./reasoning.mjs"
-import { withStreamUsage } from "./usage-meter.mjs"
+import { withStreamUsage, bodyBreakdown, formatBreakdown } from "./usage-meter.mjs"
 
 const PROVIDER_ID = "dumate"
 const PROVIDER_NAME = "百度搭子 DuMate"
@@ -624,6 +624,13 @@ export const DuMatePlugin = async (input = {}) => {
             // Ask for usage on streaming calls so magpie can see tokens and
             // cache hits at all — 297/297 of this provider's records were 0.
             bodyText = withStreamUsage(bodyText)
+            // 实测上行 p50 557KB、p90 1.9MB，而网关不缓存前缀也不吃 gzip，
+            // 所以体积就是全价。要看钱花在哪，设 DUMATE_SIZE_LOG=1 打一行分解；
+            // 默认不输出，避免每次请求都往日志里写东西。
+            if (process.env.DUMATE_SIZE_LOG === "1") {
+              const bd = bodyBreakdown(bodyText)
+              if (bd) console.error(`[dumate] 上行体积 ${formatBreakdown(bd)}`)
+            }
             let cred
             try {
               cred = await fetchGatewayToken(cookieHeaderOf(cookies))
